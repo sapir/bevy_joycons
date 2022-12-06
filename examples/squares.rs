@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy_joycons::JoyconsPlugin;
 
 const SQUARE_SIZE: f32 = 64.0;
 const AXIS_RANGE: f32 = 128.0;
@@ -6,6 +7,7 @@ const AXIS_RANGE: f32 = 128.0;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugin(JoyconsPlugin)
         .add_startup_system(setup)
         .add_system(spawn_squares_for_gamepads)
         .add_system(update_squares)

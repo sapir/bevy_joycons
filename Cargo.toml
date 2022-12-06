@@ -4,8 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.66"
+bevy_app = { version = "0.9.1", default-features = false }
+bevy_ecs = { version = "0.9.1", default-features = false }
 bevy_input = { version = "0.9.1", default-features = false }
+bevy_utils = { version = "0.9.1", default-features = false }
 joycon = { git = "https://github.com/Yamakaky/joy", version = "0.1.0", rev = "c55030e" }
+pinboard = "2.1.0"
+thunderdome = "0.6.0"
 
 # Enable a small amount of optimization in debug mode
 [profile.dev]
