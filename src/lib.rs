@@ -8,7 +8,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use bevy_app::{App, CoreStage, Plugin};
-use bevy_ecs::{event::EventWriter, schedule::IntoSystemDescriptor, system::NonSendMut};
+use bevy_ecs::{
+    event::EventWriter,
+    schedule::IntoSystemDescriptor,
+    system::{NonSendMut, ResMut, Resource},
+};
 use bevy_input::{
     gamepad::{Gamepad, GamepadAxisType, GamepadEventRaw, GamepadEventType, GamepadInfo},
     InputSystem,
@@ -41,7 +45,8 @@ impl Plugin for JoyconsPlugin {
             }
         };
 
-        app.insert_non_send_resource(Joycons::new(hidapi))
+        app.insert_non_send_resource(hidapi)
+            .insert_resource(Joycons::new())
             .add_system_to_stage(
                 CoreStage::PreUpdate,
                 detect_connection_changes.before(InputSystem),
@@ -55,17 +60,16 @@ impl Plugin for JoyconsPlugin {
     }
 }
 
+#[derive(Resource)]
 struct Joycons {
-    hidapi: HidApi,
     joycons_by_serial_number: HashMap<String, Result<Joycon, ()>>,
     trackers: Arena<Tracker>,
     next_gamepad_id: AtomicUsize,
 }
 
 impl Joycons {
-    fn new(hidapi: HidApi) -> Self {
+    fn new() -> Self {
         Self {
-            hidapi,
             joycons_by_serial_number: HashMap::new(),
             trackers: Arena::new(),
             next_gamepad_id: AtomicUsize::new(STARTING_GAMEPAD_ID),
@@ -74,24 +78,25 @@ impl Joycons {
 }
 
 fn detect_connection_changes(
-    mut joycons: NonSendMut<Joycons>,
+    mut hidapi: NonSendMut<HidApi>,
+    mut joycons: ResMut<Joycons>,
     mut events: EventWriter<GamepadEventRaw>,
 ) {
-    if let Err(e) = detect_connection_changes_inner(&mut joycons, &mut events) {
+    if let Err(e) = detect_connection_changes_inner(&mut hidapi, &mut joycons, &mut events) {
         error!("Error detecting joycon connections/disconnections: {}", e);
     }
 }
 
 fn detect_connection_changes_inner(
+    hidapi: &mut HidApi,
     joycons: &mut Joycons,
     events: &mut EventWriter<GamepadEventRaw>,
 ) -> Result<()> {
-    joycons
-        .hidapi
+    hidapi
         .refresh_devices()
         .context("Refreshing hidapi device list")?;
 
-    for device_info in joycons.hidapi.device_list() {
+    for device_info in hidapi.device_list() {
         if !is_joycon_device(device_info) {
             continue;
         }
@@ -113,7 +118,7 @@ fn detect_connection_changes_inner(
         let gamepad = Gamepad {
             id: joycons.next_gamepad_id.fetch_add(1, Ordering::SeqCst),
         };
-        let joycon = match Tracker::new(&joycons.hidapi, device_info, gamepad) {
+        let joycon = match Tracker::new(hidapi, device_info, gamepad) {
             Ok((joycon_device, tracker)) => {
                 info!("'{}' ({}) connected", product_string, serial_num);
 
@@ -218,7 +223,7 @@ impl Tracker {
     }
 }
 
-fn update_joycon_data(mut joycons: NonSendMut<Joycons>, mut events: EventWriter<GamepadEventRaw>) {
+fn update_joycon_data(mut joycons: ResMut<Joycons>, mut events: EventWriter<GamepadEventRaw>) {
     for (_, wrapper) in &mut joycons.trackers {
         // TODO: identify and remove disconnected joycons
         let Some(report) = wrapper.last_report.read() else { continue };
