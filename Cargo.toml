@@ -23,3 +23,4 @@ opt-level = 3
 
 [dev-dependencies]
 bevy = { version = "0.9.1", features = ["dynamic"] }
+rand = "0.8.5"

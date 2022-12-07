@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy_joycons::JoyconsPlugin;
+use rand::prelude::*;
 
 const SQUARE_SIZE: f32 = 64.0;
 const AXIS_RANGE: f32 = 128.0;
@@ -24,23 +25,39 @@ struct ControlledByGamepad(Gamepad);
 
 fn spawn_squares_for_gamepads(
     mut commands: Commands,
+    windows: Res<Windows>,
     mut gamepad_events: EventReader<GamepadEvent>,
 ) {
+    let primary_window = windows.primary();
+
     for event in gamepad_events.iter() {
         if let GamepadEventType::Connected(_) = event.event_type {
             // TODO: check if joycon
             info!("{:?} connected", event.gamepad);
 
-            commands.spawn((
-                SpriteBundle {
-                    sprite: Sprite {
-                        custom_size: Some(Vec2::splat(SQUARE_SIZE)),
-                        ..default()
-                    },
-                    ..default()
-                },
-                ControlledByGamepad(event.gamepad),
-            ));
+            let window_size = Vec2::new(primary_window.width(), primary_window.height());
+            let center = window_size / 2.0;
+            let margin = SQUARE_SIZE / 2.0 + AXIS_RANGE;
+            let mut rng = thread_rng();
+            let x = rng.gen_range((-center.x + margin)..(center.x - margin));
+            let y = rng.gen_range((-center.y + margin)..(center.y - margin));
+
+            commands
+                .spawn(SpatialBundle::from_transform(Transform::from_xyz(
+                    x, y, 0.0,
+                )))
+                .with_children(|parent| {
+                    parent.spawn((
+                        SpriteBundle {
+                            sprite: Sprite {
+                                custom_size: Some(Vec2::splat(SQUARE_SIZE)),
+                                ..default()
+                            },
+                            ..default()
+                        },
+                        ControlledByGamepad(event.gamepad),
+                    ));
+                });
         }
     }
 }
