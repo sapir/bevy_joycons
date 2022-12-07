@@ -23,11 +23,16 @@ use bevy_utils::{
 };
 use joycon::{
     hidapi::{DeviceInfo, HidApi},
-    joycon_sys::{input::WhichController, HID_IDS, NINTENDO_VENDOR_ID},
+    joycon_sys::{HID_IDS, NINTENDO_VENDOR_ID},
     JoyCon as JoyconDevice, Report as JoyconReport,
 };
 use pinboard::Pinboard;
 use thunderdome::{Arena, Index};
+
+pub use joycon::joycon_sys::{
+    input::{UseSPIColors, WhichController},
+    spi::ControllerColor,
+};
 
 // We start at a really high number to avoid conflicting with gilrs.
 const STARTING_GAMEPAD_ID: usize = 0x8000_0000;
@@ -61,19 +66,27 @@ impl Plugin for JoyconsPlugin {
 }
 
 #[derive(Resource)]
-struct Joycons {
-    joycons_by_serial_number: HashMap<String, Result<Joycon, ()>>,
+pub struct Joycons {
     trackers: Arena<Tracker>,
+    joycons_by_serial_number: HashMap<String, Result<Index, ()>>,
+    joycons_by_gamepad: HashMap<Gamepad, Index>,
     next_gamepad_id: AtomicUsize,
 }
 
 impl Joycons {
     fn new() -> Self {
         Self {
-            joycons_by_serial_number: HashMap::new(),
             trackers: Arena::new(),
+            joycons_by_serial_number: HashMap::new(),
+            joycons_by_gamepad: HashMap::new(),
             next_gamepad_id: AtomicUsize::new(STARTING_GAMEPAD_ID),
         }
+    }
+
+    pub fn get_info(&self, gamepad: Gamepad) -> Option<&JoyconInfo> {
+        let index = self.joycons_by_gamepad.get(&gamepad)?;
+        let tracker = self.trackers.get(*index)?;
+        Some(&tracker.info)
     }
 }
 
@@ -118,7 +131,7 @@ fn detect_connection_changes_inner(
         let gamepad = Gamepad {
             id: joycons.next_gamepad_id.fetch_add(1, Ordering::SeqCst),
         };
-        let joycon = match Tracker::new(hidapi, device_info, gamepad) {
+        let index = match Tracker::new(hidapi, device_info, gamepad) {
             Ok((joycon_device, tracker)) => {
                 info!("'{}' ({}) connected", product_string, serial_num);
 
@@ -132,8 +145,8 @@ fn detect_connection_changes_inner(
                 // This needs a dedicated thread, otherwise we get (more?)
                 // latency.
                 spawn({
-                    let product_string = tracker.product_string.clone();
-                    let serial_number = tracker.serial_number.clone();
+                    let product_string = tracker.info.product_string.clone();
+                    let serial_number = tracker.info.serial_number.clone();
                     let last_report = tracker.last_report.clone();
 
                     move || {
@@ -147,7 +160,10 @@ fn detect_connection_changes_inner(
                 });
 
                 let index = joycons.trackers.insert(tracker);
-                Ok(Joycon(index))
+
+                joycons.joycons_by_gamepad.insert(gamepad, index);
+
+                Ok(index)
             }
 
             Err(e) => {
@@ -160,7 +176,7 @@ fn detect_connection_changes_inner(
 
         joycons
             .joycons_by_serial_number
-            .insert(serial_num.to_string(), joycon);
+            .insert(serial_num.to_string(), index);
     }
 
     Ok(())
@@ -170,13 +186,47 @@ fn is_joycon_device(device_info: &DeviceInfo) -> bool {
     device_info.vendor_id() == NINTENDO_VENDOR_ID && HID_IDS.contains(&device_info.product_id())
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Joycon(Index);
+pub struct JoyconInfo {
+    pub product_string: String,
+    pub serial_number: String,
+    pub which: WhichController,
+    pub color: ControllerColor,
+    pub use_spi_colors: UseSPIColors,
+}
+
+impl JoyconInfo {
+    fn new(device_info: &DeviceInfo, joycon_device: &mut JoyconDevice) -> Result<Self> {
+        let product_string = device_info.product_string().unwrap().to_string();
+        let serial_number = device_info.serial_number().unwrap().to_string();
+
+        let joycon_dev_info = joycon_device
+            .get_dev_info()
+            .context("Getting joycon device info")?;
+        let which = joycon_dev_info
+            .which_controller
+            .try_into()
+            .context("Parsing joycon type")?;
+        let use_spi_colors = joycon_dev_info
+            .use_spi_colors
+            .try_into()
+            .context("Parsing joycon UseSPIColors data")?;
+
+        let color = joycon_device
+            .read_spi()
+            .context("Reading controller color")?;
+
+        Ok(Self {
+            product_string,
+            serial_number,
+            which,
+            use_spi_colors,
+            color,
+        })
+    }
+}
 
 struct Tracker {
-    product_string: String,
-    serial_number: String,
-    which: WhichController,
+    info: JoyconInfo,
     /// If the pinboard is empty, then the joycon thread has hit an error.
     last_report: Arc<Pinboard<JoyconReport>>,
     gamepad: Gamepad,
@@ -188,34 +238,25 @@ impl Tracker {
         device_info: &DeviceInfo,
         gamepad: Gamepad,
     ) -> Result<(JoyconDevice, Self)> {
-        let product_string = device_info.product_string().unwrap().to_string();
-        let serial_number = device_info.serial_number().unwrap().to_string();
-
         let device = device_info
             .open_device(hidapi)
             .context("Opening joycon hid device")?;
-        let mut inner =
+        let mut joycon_device =
             JoyconDevice::new(device, device_info.clone()).context("Initializing joycon")?;
 
-        let joycon_dev_info = inner.get_dev_info().context("Getting joycon device info")?;
-        let which = joycon_dev_info
-            .which_controller
-            .try_into()
-            .context("Parsing joycon type")?;
-
-        inner
+        joycon_device
             .load_calibration()
             .context("Loading calibration data")?;
 
-        let report = inner.tick().context("Polling joycon first time")?;
+        let info = JoyconInfo::new(device_info, &mut joycon_device)?;
+
+        let report = joycon_device.tick().context("Polling joycon first time")?;
         let last_report = Arc::new(Pinboard::new(report));
 
         Ok((
-            inner,
+            joycon_device,
             Self {
-                product_string,
-                serial_number,
-                which,
+                info,
                 last_report,
                 gamepad,
             },
@@ -228,7 +269,7 @@ fn update_joycon_data(mut joycons: ResMut<Joycons>, mut events: EventWriter<Game
         // TODO: identify and remove disconnected joycons
         let Some(report) = wrapper.last_report.read() else { continue };
 
-        match wrapper.which {
+        match wrapper.info.which {
             WhichController::LeftJoyCon => {
                 // Rotate data by 90 degrees.
                 send_axis_event(

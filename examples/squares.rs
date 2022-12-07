@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy_joycons::JoyconsPlugin;
+use bevy_joycons::{Joycons, JoyconsPlugin};
 use rand::prelude::*;
 
 const SQUARE_SIZE: f32 = 64.0;
@@ -26,6 +26,7 @@ struct ControlledByGamepad(Gamepad);
 fn spawn_squares_for_gamepads(
     mut commands: Commands,
     windows: Res<Windows>,
+    joycons: Res<Joycons>,
     mut gamepad_events: EventReader<GamepadEvent>,
 ) {
     let primary_window = windows.primary();
@@ -42,6 +43,14 @@ fn spawn_squares_for_gamepads(
             let x = rng.gen_range((-center.x + margin)..(center.x - margin));
             let y = rng.gen_range((-center.y + margin)..(center.y - margin));
 
+            let color = joycons
+                .get_info(event.gamepad)
+                .map(|info| {
+                    let color = info.color.body;
+                    Color::hex(&color.to_string()[1..]).unwrap()
+                })
+                .unwrap_or(Color::WHITE);
+
             commands
                 .spawn(SpatialBundle::from_transform(Transform::from_xyz(
                     x, y, 0.0,
@@ -51,6 +60,7 @@ fn spawn_squares_for_gamepads(
                         SpriteBundle {
                             sprite: Sprite {
                                 custom_size: Some(Vec2::splat(SQUARE_SIZE)),
+                                color,
                                 ..default()
                             },
                             ..default()
